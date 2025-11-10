@@ -33,14 +33,10 @@
   .note{ padding:10px 12px; background:rgba(255,255,255,.15); border-radius:8px;}
   #err{ position:fixed; left:12px; bottom:12px; max-width:50vw; background:rgba(0,0,0,.6); color:#fff; padding:10px 12px; border-radius:10px; font:12px/1.4 monospace; white-space:pre-wrap; z-index:10002; display:none;}
 
-  /* ===== Modal with progress bar: 仅在摄像头启用/使用时显示 ===== */
-  #modalBackdrop{ position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:10020; }
-  .modalCard{ width:min(560px,90vw); background:#222; color:#fff; border-radius:14px; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,.5);}
-  .modalCard h3{ margin:0 0 8px 0; font-size:20px;}
-  .modalMsg{ font-size:14px; opacity:.9; margin-bottom:14px;}
-  .progress{ width:100%; height:12px; background:rgba(255,255,255,.15); border-radius:999px; overflow:hidden; }
-  .bar{ height:100%; width:0%; background:#1e88e5; transition:width .25s ease; }
-  .modalFoot{ margin-top:10px; font-size:12px; opacity:.8;}
+  /* Fullscreen guard overlay */
+  #fsGuard{ position:fixed; inset:0; background:rgba(0,0,0,.7); color:#fff; display:none; align-items:center; justify-content:center; z-index:10020;}
+  .guardCard{ width:min(560px,90vw); background:#222; color:#fff; border-radius:14px; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,.5);}
+  .guardCard h3{ margin:0 0 8px 0; font-size:20px;}
 </style>
 </head>
 <body>
@@ -49,13 +45,12 @@
 <div id="err"></div>
 <div id="app" class="center"><div class="wrap">Initializing…</div></div>
 
-<!-- ===== 仅摄像头阶段使用的进度条模态框 ===== -->
-<div id="modalBackdrop">
-  <div class="modalCard">
-    <h3 id="modalTitle">Camera setup</h3>
-    <div id="modalMsg" class="modalMsg">Preparing components…</div>
-    <div class="progress"><div id="modalBar" class="bar"></div></div>
-    <div id="modalFoot" class="modalFoot">If this takes unusually long, please check that you granted camera permission and keep your face centered in the preview.</div>
+<!-- Fullscreen guard (shown if participant exits fullscreen during task) -->
+<div id="fsGuard">
+  <div class="guardCard">
+    <h3>Fullscreen required</h3>
+    <p>For data quality, please stay in fullscreen during calibration and the task.</p>
+    <button class="btn" id="fsReturn">Return to fullscreen</button>
   </div>
 </div>
 
@@ -79,38 +74,16 @@ const app = document.getElementById('app');
 const gazeDot = document.getElementById('gazeDot');
 const statusBox = document.getElementById('status');
 
-/* Modal helpers（仅摄像头阶段会被调用） */
-const modal = {
-  el: document.getElementById('modalBackdrop'),
-  title: document.getElementById('modalTitle'),
-  msg: document.getElementById('modalMsg'),
-  bar: document.getElementById('modalBar'),
-  foot: document.getElementById('modalFoot'),
-  timer: null,
-  open(title='Camera setup', msg='Preparing…', startPct=5){
-    this.title.textContent = title;
-    this.msg.textContent = msg;
-    this.bar.style.width = Math.max(0, Math.min(100, startPct)) + '%';
-    this.el.style.display = 'flex';
-  },
-  set(pct, msg){
-    if (typeof msg === 'string') this.msg.textContent = msg;
-    this.bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
-  },
-  ramp(to=90, step=3, iv=300){
-    if (this.timer) clearInterval(this.timer);
-    let cur = parseFloat(this.bar.style.width) || 0;
-    this.timer = setInterval(()=>{
-      cur = Math.min(to, cur + step);
-      this.bar.style.width = cur + '%';
-      if (cur >= to) { clearInterval(this.timer); this.timer = null; }
-    }, iv);
-  },
-  close(){
-    if (this.timer) { clearInterval(this.timer); this.timer=null; }
-    this.el.style.display = 'none';
-  }
-};
+/* Fullscreen guard */
+const fsGuard = document.getElementById('fsGuard');
+const fsReturnBtn = document.getElementById('fsReturn');
+let fsGuardEnabled = false;
+fsReturnBtn.addEventListener('click', async ()=>{ try{ await enterFullscreen(); }catch(e){}; checkFsGuard(); });
+function checkFsGuard(){
+  if (fsGuardEnabled && !isFullscreen()) { fsGuard.style.display='flex'; }
+  else { fsGuard.style.display='none'; }
+}
+document.addEventListener('fullscreenchange', checkFsGuard);
 
 const show = html => {
   app.innerHTML = `<div class="wrap" tabindex="-1">${html}</div>`;
@@ -283,7 +256,7 @@ function startGazePreview(){
   previewTimer = setInterval(async ()=>{
     const p=await webgazer.getCurrentPrediction();
     if (p){ gazeDot.style.left=p.x+'px'; gazeDot.style.top=p.y+'px'; statusBox.textContent='Tracking OK ✓'; }
-    else { statusBox.textContent='Preparing camera/model…'; }
+    else { statusBox.textContent='Camera is preparing… this can take a few seconds.'; }
   },33);
   if (previewKeepAlive) clearInterval(previewKeepAlive);
   previewKeepAlive = setInterval(()=>ensurePreviewVisible(), 500);
@@ -298,21 +271,13 @@ async function waitForPrediction(waitMs=10000){
   const t0=performance.now(); while(performance.now()-t0<waitMs){ const p=await webgazer.getCurrentPrediction(); if(p) return true; await sleep(100); } return false;
 }
 
-/* A unified camera warmup with progress modal — 仅摄像头阶段调用 */
-async function warmupCameraAndPreview({title='Camera setup', msg='Requesting camera access…', waitMs=10000}={}){
-  modal.open(title, msg, 10);
-  modal.ramp(90, 3, 250);
+/* Camera warmup WITHOUT progress bar — only a short notice */
+async function warmupCameraAndPreview({msg='Camera is preparing… this can take a few seconds.', waitMs=10000}={}){
+  // show a small notice in the main area (English only); preview sits top-left
+  show(`<h2>Camera setup</h2><p class="muted">${msg}</p>`);
   startGazePreview(); ensurePreviewVisible();
   const ok = await waitForPrediction(waitMs);
-  if (ok){
-    modal.set(100, 'Ready');
-    await sleep(300);
-    modal.close();
-  }else{
-    modal.set(90, 'Still preparing… please check the top-left preview and lighting.');
-    await sleep(1200);
-    modal.close();
-  }
+  // keep going either way
   stopGazePreview();
   return ok;
 }
@@ -404,8 +369,7 @@ async function runScreenScaleCalibration(){
       </div>
       <div style="min-width:220px;">
         <label>Viewing distance (cm):
-          <input id="dist" type="number" min="40" max="90" value="60"
-                 style="width:80px;" title="Recommended 40–60 cm; if unsure, enter 50"/>
+          <input id="dist" type="number" min="40" max="90" value="60" style="width:80px;"/>
         </label>
         <div class="muted" style="margin-top:6px;">
           Recommended <b>40–60 cm</b>; if unsure, enter <b>50</b>.
@@ -567,7 +531,7 @@ function showCalibIntro9(){
   `);
 }
 
-/* 新增：9 点验证前指导语（需点击才能开始验证） */
+/* 9-point validation intro (click to start) */
 function showValidationIntro9(){
   show(`
     <h2>9-Point Validation</h2>
@@ -660,32 +624,32 @@ async function showValidationOutcomeAndMaybeLoop9(acc){
   if (failed){
     showCalibIntro9();
     await new Promise(r=>document.getElementById('calStart9').onclick=r);
-    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
+    await warmupCameraAndPreview();
     await calibrateNinePointsMouse();
 
-    /* 新增验证前指导语 */
     showValidationIntro9();
     await new Promise(r=>document.getElementById('valStart9').onclick=r);
 
-    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
+    await warmupCameraAndPreview();
     const acc2 = await runNineValidation();
     await showValidationOutcomeAndMaybeLoop9(acc2);
   }
 }
 
 async function calibrationFlow(){
-  // 9-point: instruction → camera warmup → calibration → validation intro → camera warmup → validation → results/loop
+  // Enable fullscreen guard from here on
+  fsGuardEnabled = true; checkFsGuard();
+
   showCalibIntro9();
   await new Promise(r=>document.getElementById('calStart9').onclick=r);
 
-  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
+  await warmupCameraAndPreview();
   await calibrateNinePointsMouse();
 
-  /* 新增：验证前指导语（需要点击开始） */
   showValidationIntro9();
   await new Promise(r=>document.getElementById('valStart9').onclick=r);
 
-  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
+  await warmupCameraAndPreview();
   const acc = await runNineValidation();
   await showValidationOutcomeAndMaybeLoop9(acc);
 }
@@ -767,19 +731,19 @@ async function quickFivePointValidation(){
 
   showCalibIntro5First();
   await new Promise(r=>document.getElementById('calStart5').onclick=r);
-  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
+  await warmupCameraAndPreview();
   await calibrateFivePointsMouse();
 
-  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
+  await warmupCameraAndPreview();
   let res = await runFiveValidation();
 
   while (!res.passAll){
     showCalibIntro5Retry();
     await new Promise(r=>document.getElementById('calRetry5').onclick=r);
-    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
+    await warmupCameraAndPreview();
     await calibrateFivePointsMouse();
 
-    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
+    await warmupCameraAndPreview();
     res = await runFiveValidation();
   }
 
@@ -926,6 +890,7 @@ async function runPractice(){
 
     const z=checkZoomAndSize(); if(z) alert(z);
     if(!isFullscreen()) await enterFullscreen();
+    checkFsGuard();
 
     const practiceOrder = shuffle(practiceSet.map(x=>({...x})));
     for(const it of practiceOrder){
@@ -955,6 +920,7 @@ async function runGroup(index, list){
 
   const z=checkZoomAndSize(); if(z) alert(z);
   if(!isFullscreen()) await enterFullscreen();
+  checkFsGuard();
 
   for(let i=0;i<list.length;i++){
     const it=list[i];
@@ -966,16 +932,19 @@ async function runGroup(index, list){
       await showKeyReminder();
       const z2=checkZoomAndSize(); if(z2) alert(z2);
       if(!isFullscreen()) await enterFullscreen();
+      checkFsGuard();
     }
 
     if (t === MID_POINT_IN_BLOCK && t < list.length){
       await quickFivePointValidation();
       const z3=checkZoomAndSize(); if(z3) alert(z3);
       if(!isFullscreen()) await enterFullscreen();
+      checkFsGuard();
 
       await showKeyReminder();
       const z4=checkZoomAndSize(); if(z4) alert(z4);
       if(!isFullscreen()) await enterFullscreen();
+      checkFsGuard();
     }
   }
 }
@@ -1018,7 +987,7 @@ async function finishAndPayout(){
 
 /* ===================== Main ===================== */
 async function main(){
-  // 加载 webgazer：不再显示进度条（你的要求），只显示简单提示
+  // Load webgazer (no progress bar)
   show(`<div class="wrap"><h2>System Notice</h2><p class="muted">Loading eye-tracking library… If this page takes unusually long, refresh or check your network connection.</p></div>`);
   try{
     await ensureWebgazer();
@@ -1047,8 +1016,11 @@ async function main(){
   await showComprehensionQuiz();
   if (!isFullscreen()) await showFullscreenStep();
 
-  // 第一次初始化摄像头：仅在摄像头阶段显示进度条
-  await warmupCameraAndPreview({title:'Camera setup', msg:'Requesting camera access…', waitMs:10000});
+  // From here on, enable fullscreen guard
+  fsGuardEnabled = true; checkFsGuard();
+
+  // Initial camera enable (no progress bar; just a short message)
+  await warmupCameraAndPreview();
   try { await initWebgazer(); } catch(e){}
 
   await calibrationFlow();
