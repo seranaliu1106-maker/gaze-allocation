@@ -33,7 +33,7 @@
   .note{ padding:10px 12px; background:rgba(255,255,255,.15); border-radius:8px;}
   #err{ position:fixed; left:12px; bottom:12px; max-width:50vw; background:rgba(0,0,0,.6); color:#fff; padding:10px 12px; border-radius:10px; font:12px/1.4 monospace; white-space:pre-wrap; z-index:10002; display:none;}
 
-  /* ===== Modal with progress bar ===== */
+  /* ===== Modal with progress bar: 仅在摄像头启用/使用时显示 ===== */
   #modalBackdrop{ position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:10020; }
   .modalCard{ width:min(560px,90vw); background:#222; color:#fff; border-radius:14px; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,.5);}
   .modalCard h3{ margin:0 0 8px 0; font-size:20px;}
@@ -49,7 +49,7 @@
 <div id="err"></div>
 <div id="app" class="center"><div class="wrap">Initializing…</div></div>
 
-<!-- ===== Camera Progress Modal (DON'T REMOVE) ===== -->
+<!-- ===== 仅摄像头阶段使用的进度条模态框 ===== -->
 <div id="modalBackdrop">
   <div class="modalCard">
     <h3 id="modalTitle">Camera setup</h3>
@@ -79,7 +79,7 @@ const app = document.getElementById('app');
 const gazeDot = document.getElementById('gazeDot');
 const statusBox = document.getElementById('status');
 
-/* Modal helpers */
+/* Modal helpers（仅摄像头阶段会被调用） */
 const modal = {
   el: document.getElementById('modalBackdrop'),
   title: document.getElementById('modalTitle'),
@@ -298,7 +298,7 @@ async function waitForPrediction(waitMs=10000){
   const t0=performance.now(); while(performance.now()-t0<waitMs){ const p=await webgazer.getCurrentPrediction(); if(p) return true; await sleep(100); } return false;
 }
 
-/* A unified camera warmup with progress modal */
+/* A unified camera warmup with progress modal — 仅摄像头阶段调用 */
 async function warmupCameraAndPreview({title='Camera setup', msg='Requesting camera access…', waitMs=10000}={}){
   modal.open(title, msg, 10);
   modal.ramp(90, 3, 250);
@@ -443,7 +443,7 @@ async function runScreenScaleCalibration(){
   try { localStorage.setItem('px_per_deg', String(PX_PER_DEG)); } catch(e){}
 }
 
-/* ===== Overview & Quiz (uses “group/round” wording) ===== */
+/* ===== Overview & Quiz ===== */
 async function showOverview(){
   return await new Promise((resolve)=>{
     show(`
@@ -551,7 +551,7 @@ async function showFullscreenStep(){
   });
 }
 
-/* ===== Calibration instruction pages (calibration only; validation auto-start) ===== */
+/* ===== Calibration instruction pages ===== */
 function showCalibIntro9(){
   show(`
     <h2>9-Point Calibration (each point: <b>click 2 times</b>)</h2>
@@ -561,9 +561,20 @@ function showCalibIntro9(){
     <ol style="margin-top:10px;">
       <li>Red dots appear in <b>random order</b> at 9 positions (corners, mid-edges, center).</li>
       <li>On each dot, <b>click twice</b>, about <b>0.3–0.5 s</b> apart; keep your gaze on the dot while clicking.</li>
-      <li>After finishing all 9 dots, validation will <b>start automatically</b> (no extra instruction page).</li>
+      <li>After finishing all 9 dots, you will see a <b>validation instruction</b>. Click to start validation.</li>
     </ol>
     <button class="btn" id="calStart9">Start 9-point calibration</button>
+  `);
+}
+
+/* 新增：9 点验证前指导语（需点击才能开始验证） */
+function showValidationIntro9(){
+  show(`
+    <h2>9-Point Validation</h2>
+    <div class="note">
+      Please keep your head stable and look at each red dot as it appears. No clicking needed during validation.
+    </div>
+    <button class="btn" id="valStart9">Start 9-point validation</button>
   `);
 }
 
@@ -652,6 +663,10 @@ async function showValidationOutcomeAndMaybeLoop9(acc){
     await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
     await calibrateNinePointsMouse();
 
+    /* 新增验证前指导语 */
+    showValidationIntro9();
+    await new Promise(r=>document.getElementById('valStart9').onclick=r);
+
     await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
     const acc2 = await runNineValidation();
     await showValidationOutcomeAndMaybeLoop9(acc2);
@@ -659,18 +674,23 @@ async function showValidationOutcomeAndMaybeLoop9(acc){
 }
 
 async function calibrationFlow(){
-  // 9-point: instruction → camera warmup → calibration → camera warmup → validation → results/loop
+  // 9-point: instruction → camera warmup → calibration → validation intro → camera warmup → validation → results/loop
   showCalibIntro9();
   await new Promise(r=>document.getElementById('calStart9').onclick=r);
+
   await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
   await calibrateNinePointsMouse();
+
+  /* 新增：验证前指导语（需要点击开始） */
+  showValidationIntro9();
+  await new Promise(r=>document.getElementById('valStart9').onclick=r);
 
   await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
   const acc = await runNineValidation();
   await showValidationOutcomeAndMaybeLoop9(acc);
 }
 
-/* ======= Mid-session: 5-point calibration → validation (no validation page) ======= */
+/* ======= Mid-session: 5-point calibration → validation ======= */
 function showMidWhyIntro(){
   show(`
     <h2>Recalibration</h2>
@@ -998,19 +1018,11 @@ async function finishAndPayout(){
 
 /* ===================== Main ===================== */
 async function main(){
-  // Keep the initial notice (popup) and add progress while loading the gaze library
-  show(`<div class="wrap"><h2>System Notice / Loading</h2><p class="muted">If this page takes unusually long, refresh or check your network connection; make sure you have granted camera permissions.</p></div>`);
-  modal.open('Loading components', 'Fetching eye-tracking library…', 8);
-  modal.ramp(55, 3, 200);
+  // 加载 webgazer：不再显示进度条（你的要求），只显示简单提示
+  show(`<div class="wrap"><h2>System Notice</h2><p class="muted">Loading eye-tracking library… If this page takes unusually long, refresh or check your network connection.</p></div>`);
   try{
     await ensureWebgazer();
-    modal.set(70, 'Eye-tracking library loaded.');
-    await sleep(200);
-    modal.close();
   }catch(e){
-    modal.set(100, 'Failed to load eye-tracking library.');
-    await sleep(500);
-    modal.close();
     const errBox=document.getElementById('err'); errBox.style.display='block';
     errBox.textContent = 'Failed to load WebGazer:\n' + (e && (e.stack||e.message||e));
     show('<div class="wrap"><h2>Unable to load eye-tracking library</h2><p>Details and possible fixes are shown in the bottom-left box.</p></div>');
@@ -1035,11 +1047,9 @@ async function main(){
   await showComprehensionQuiz();
   if (!isFullscreen()) await showFullscreenStep();
 
-  // Initialize the webcam & model once before first calibration (with progress modal)
-  modal.open('Camera setup', 'Requesting camera access…', 10);
-  modal.ramp(85, 2.5, 250);
-  try { await initWebgazer(); modal.set(95, 'Camera ready'); await sleep(200); } catch(e){ modal.set(95, 'Camera initialization encountered an issue'); await sleep(400); }
-  modal.close();
+  // 第一次初始化摄像头：仅在摄像头阶段显示进度条
+  await warmupCameraAndPreview({title:'Camera setup', msg:'Requesting camera access…', waitMs:10000});
+  try { await initWebgazer(); } catch(e){}
 
   await calibrationFlow();
 
