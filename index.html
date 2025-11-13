@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Gambling Task — Calibration + Validation + Practice + Main</title>
+<title>Gambling Task — Calibration + Validation + Practice + Main (Hypothetical Decisions)</title>
 <style>
   :root{ --bg:#808080; --fix: rgb(166,85,34); --txt:#fff; }
   html,body{ height:100%; margin:0; background:var(--bg); font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
@@ -33,10 +33,20 @@
   .note{ padding:10px 12px; background:rgba(255,255,255,.15); border-radius:8px;}
   #err{ position:fixed; left:12px; bottom:12px; max-width:50vw; background:rgba(0,0,0,.6); color:#fff; padding:10px 12px; border-radius:10px; font:12px/1.4 monospace; white-space:pre-wrap; z-index:10002; display:none;}
 
-  /* Fullscreen guard overlay */
-  #fsGuard{ position:fixed; inset:0; background:rgba(0,0,0,.7); color:#fff; display:none; align-items:center; justify-content:center; z-index:10020;}
-  .guardCard{ width:min(560px,90vw); background:#222; color:#fff; border-radius:14px; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,.5);}
-  .guardCard h3{ margin:0 0 8px 0; font-size:20px;}
+  /* ===== Camera Progress Modal (first-time only) ===== */
+  #modalBackdrop{ position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:10020; }
+  .modalCard{ width:min(560px,90vw); background:#222; color:#fff; border-radius:14px; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,.5);}
+  .modalCard h3{ margin:0 0 8px 0; font-size:20px;}
+  .modalMsg{ font-size:14px; opacity:.9; margin-bottom:14px;}
+  .progress{ width:100%; height:12px; background:rgba(255,255,255,.15); border-radius:999px; overflow:hidden; }
+  .bar{ height:100%; width:0%; background:#1e88e5; transition:width .25s ease; }
+  .modalFoot{ margin-top:10px; font-size:12px; opacity:.8;}
+
+  /* ===== Fullscreen warning overlay ===== */
+  #fsWarn{ position:fixed; inset:0; background:rgba(0,0,0,.65); display:none; align-items:center; justify-content:center; z-index:10030; }
+  .fsCard{ width:min(520px,90vw); background:#202124; color:#fff; border-radius:14px; padding:20px 22px; box-shadow:0 10px 30px rgba(0,0,0,.5);}
+  .fsCard h3{ margin:0 0 8px 0; font-size:20px;}
+  .fsCard p{ font-size:14px; opacity:.95; }
 </style>
 </head>
 <body>
@@ -45,12 +55,22 @@
 <div id="err"></div>
 <div id="app" class="center"><div class="wrap">Initializing…</div></div>
 
-<!-- Fullscreen guard (shown if participant exits fullscreen during task) -->
-<div id="fsGuard">
-  <div class="guardCard">
-    <h3>Fullscreen required</h3>
-    <p>For data quality, please stay in fullscreen during calibration and the task.</p>
-    <button class="btn" id="fsReturn">Return to fullscreen</button>
+<!-- ===== Camera Progress Modal (first-time only) ===== -->
+<div id="modalBackdrop">
+  <div class="modalCard">
+    <h3 id="modalTitle">Camera setup</h3>
+    <div id="modalMsg" class="modalMsg">Preparing components…</div>
+    <div class="progress"><div id="modalBar" class="bar"></div></div>
+    <div id="modalFoot" class="modalFoot">If this takes unusually long, please ensure camera permission is granted and your face is well lit.</div>
+  </div>
+</div>
+
+<!-- ===== Fullscreen warning ===== -->
+<div id="fsWarn">
+  <div class="fsCard">
+    <h3>Fullscreen was exited</h3>
+    <p>For data quality and standardized viewing geometry, please return to <b>system fullscreen</b> to continue.</p>
+    <button class="btn" id="fsBackBtn">Re-enter fullscreen</button>
   </div>
 </div>
 
@@ -74,16 +94,38 @@ const app = document.getElementById('app');
 const gazeDot = document.getElementById('gazeDot');
 const statusBox = document.getElementById('status');
 
-/* Fullscreen guard */
-const fsGuard = document.getElementById('fsGuard');
-const fsReturnBtn = document.getElementById('fsReturn');
-let fsGuardEnabled = false;
-fsReturnBtn.addEventListener('click', async ()=>{ try{ await enterFullscreen(); }catch(e){}; checkFsGuard(); });
-function checkFsGuard(){
-  if (fsGuardEnabled && !isFullscreen()) { fsGuard.style.display='flex'; }
-  else { fsGuard.style.display='none'; }
-}
-document.addEventListener('fullscreenchange', checkFsGuard);
+/* Modal helpers (first-time only) */
+const modal = {
+  el: document.getElementById('modalBackdrop'),
+  title: document.getElementById('modalTitle'),
+  msg: document.getElementById('modalMsg'),
+  bar: document.getElementById('modalBar'),
+  foot: document.getElementById('modalFoot'),
+  timer: null,
+  open(title='Camera setup', msg='Preparing…', startPct=5){
+    this.title.textContent = title;
+    this.msg.textContent = msg;
+    this.bar.style.width = Math.max(0, Math.min(100, startPct)) + '%';
+    this.el.style.display = 'flex';
+  },
+  set(pct, msg){
+    if (typeof msg === 'string') this.msg.textContent = msg;
+    this.bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  },
+  ramp(to=90, step=3, iv=300){
+    if (this.timer) clearInterval(this.timer);
+    let cur = parseFloat(this.bar.style.width) || 0;
+    this.timer = setInterval(()=>{
+      cur = Math.min(to, cur + step);
+      this.bar.style.width = cur + '%';
+      if (cur >= to) { clearInterval(this.timer); this.timer = null; }
+    }, iv);
+  },
+  close(){
+    if (this.timer) { clearInterval(this.timer); this.timer=null; }
+    this.el.style.display = 'none';
+  }
+};
 
 const show = html => {
   app.innerHTML = `<div class="wrap" tabindex="-1">${html}</div>`;
@@ -103,7 +145,7 @@ const setStageBlank = on => { app.style.display = on ? 'none' : 'flex'; };
 
 const PRACTICE_N = 5;
 const N_UNIQUE   = 100;                // 100 rounds per group → 200 total
-const START_ENDOWMENT = 10;
+const START_ENDOWMENT = 10;            // Fixed $10 participant fee (no bonus; hypothetical choices)
 let PX_PER_DEG = 40;
 const SEP_DEG = 13;
 const KEY_REMIND_INTERVAL = 25;
@@ -145,6 +187,17 @@ const KEYMAP = PARTICIPANT_ACCEPTS_WITH_D
 const DECISION_KEYS = new Set(['d','j','D','J']);
 function keyLegendHTML(showIt){ return showIt ? `<div class="legend"><b>${KEYMAP.legend}</b></div>` : ''; }
 
+/* ===== No-consent completion code & redirect (新增) ===== */
+const PROLIFIC_NOCONSENT_CODE = getQS('NOCONSENT_CODE') || '';
+function redirectToProlificWithCode(code){
+  if (!code){
+    if (PROLIFIC_RETURN_URL) { location.href = PROLIFIC_RETURN_URL; }
+    return;
+  }
+  const url = 'https://app.prolific.com/submissions/complete?cc=' + encodeURIComponent(code);
+  location.replace(url);
+}
+
 /* Retrieve previous pixel-per-degree calibration */
 try{
   const saved = parseFloat(localStorage.getItem('px_per_deg'));
@@ -184,6 +237,22 @@ async function enterFullscreen(){
     }
   }catch(e){ console.warn('enterFullscreen error:', e); }
 }
+
+/* ===== Fullscreen warning controller ===== */
+const fsWarnEl = document.getElementById('fsWarn');
+function showFsWarn(){ fsWarnEl.style.display='flex'; }
+function hideFsWarn(){ fsWarnEl.style.display='none'; }
+async function ensureFsIfExited(){
+  if (!isFullscreen()){ showFsWarn(); }
+}
+document.getElementById('fsBackBtn').onclick = async ()=>{
+  hideFsWarn();
+  try{ await enterFullscreen(); }catch(e){}
+};
+/* listen fullscreen change (cross-browser) */
+['fullscreenchange','webkitfullscreenchange','mozfullscreenchange','MSFullscreenChange'].forEach(ev=>{
+  document.addEventListener(ev, ()=>{ if(!isFullscreen()) showFsWarn(); else hideFsWarn(); });
+});
 
 /* ===================== Trial set generation ===================== */
 function genUnique(n=100){
@@ -225,6 +294,8 @@ async function ensureWebgazer(){
 
 /* ===================== WebGazer wrapping & camera warmup ===================== */
 let previewTimer = null, previewKeepAlive=null;
+let CAMERA_WARMED = false;  // <<< first-time progress bar only
+
 function ensurePreviewVisible(){
   const vg = document.getElementById('webgazerVideoContainer');
   if (vg){
@@ -256,7 +327,7 @@ function startGazePreview(){
   previewTimer = setInterval(async ()=>{
     const p=await webgazer.getCurrentPrediction();
     if (p){ gazeDot.style.left=p.x+'px'; gazeDot.style.top=p.y+'px'; statusBox.textContent='Tracking OK ✓'; }
-    else { statusBox.textContent='Camera is preparing… this can take a few seconds.'; }
+    else { statusBox.textContent='Preparing camera/model…'; }
   },33);
   if (previewKeepAlive) clearInterval(previewKeepAlive);
   previewKeepAlive = setInterval(()=>ensurePreviewVisible(), 500);
@@ -271,15 +342,25 @@ async function waitForPrediction(waitMs=10000){
   const t0=performance.now(); while(performance.now()-t0<waitMs){ const p=await webgazer.getCurrentPrediction(); if(p) return true; await sleep(100); } return false;
 }
 
-/* Camera warmup WITHOUT progress bar — only a short notice */
-async function warmupCameraAndPreview({msg='Camera is preparing… this can take a few seconds.', waitMs=10000}={}){
-  // show a small notice in the main area (English only); preview sits top-left
-  show(`<h2>Camera setup</h2><p class="muted">${msg}</p>`);
-  startGazePreview(); ensurePreviewVisible();
-  const ok = await waitForPrediction(waitMs);
-  // keep going either way
-  stopGazePreview();
-  return ok;
+/* First-time progress bar; later calls show no bar */
+async function warmupCameraAndPreview({title='Camera setup', msg='Requesting camera access…', waitMs=10000}={}){
+  if (!CAMERA_WARMED){
+    modal.open(title, msg, 10);
+    modal.ramp(90, 3, 250);
+    startGazePreview(); ensurePreviewVisible();
+    const ok = await waitForPrediction(waitMs);
+    if (ok){ modal.set(100, 'Ready'); await sleep(300); }
+    else { modal.set(90, 'Still preparing… please check the preview and lighting.'); await sleep(1200); }
+    modal.close();
+    stopGazePreview();
+    CAMERA_WARMED = true;
+    return ok;
+  } else {
+    startGazePreview(); ensurePreviewVisible();
+    await waitForPrediction(1500);
+    stopGazePreview();
+    return true;
+  }
 }
 
 /* ===================== Wait for Space ===================== */
@@ -311,7 +392,7 @@ async function showWelcome(){
   return await new Promise((resolve)=>{
     show(`
       <h2>Welcome</h2>
-      <p class="muted">Click the button below to <b>enter fullscreen</b> and continue.</p>
+      <p class="muted">Click the button below to enter <b>system fullscreen</b> and continue.</p>
       <button class="btn" id="btnNext">Enter fullscreen and continue</button>
     `);
     document.getElementById('btnNext').onclick = async ()=>{
@@ -349,7 +430,17 @@ async function showConsent(){
     };
     document.getElementById('decline').onclick = ()=>{
       consent_record = { accepted:false, t:new Date().toISOString(), prolific_pid: PROLIFIC_PID };
-      resolve('declined');
+
+      // ===== 新增：不中付并返回 Prolific =====
+      show(`
+        <h2>Consent not provided</h2>
+        <p class="muted">You chose not to provide informed consent. You will be returned to Prolific with a <b>no-consent / screen-out</b> completion code so that no payment is issued.</p>
+        <button class="btn" id="goBackProlific">Return to Prolific</button>
+      `);
+      document.getElementById('goBackProlific').onclick = ()=>redirectToProlificWithCode(PROLIFIC_NOCONSENT_CODE);
+      if (PROLIFIC_NOCONSENT_CODE){
+        setTimeout(()=>redirectToProlificWithCode(PROLIFIC_NOCONSENT_CODE), 800);
+      }
     };
   });
 }
@@ -369,7 +460,8 @@ async function runScreenScaleCalibration(){
       </div>
       <div style="min-width:220px;">
         <label>Viewing distance (cm):
-          <input id="dist" type="number" min="40" max="90" value="60" style="width:80px;"/>
+          <input id="dist" type="number" min="40" max="90" value="60"
+                 style="width:80px;" title="Recommended 40–60 cm; if unsure, enter 50"/>
         </label>
         <div class="muted" style="margin-top:6px;">
           Recommended <b>40–60 cm</b>; if unsure, enter <b>50</b>.
@@ -413,11 +505,11 @@ async function showOverview(){
     show(`
       <h2>Overview & Instructions</h2>
       <ol>
-        <li><b>Eye-tracking setup:</b> 9-point calibration + 9-point validation.</li>
-        <li><b>Per-round flow:</b> central cross “+” for 2–4 s → two boxes appear (Gain +$ / Loss −$), each with 50% probability → choose Accept/Reject via keyboard (no time limit).</li>
-        <li><b>Practice:</b> ${PRACTICE_N} rounds (not used for payment; you may repeat if needed).</li>
+        <li><b>Eye-tracking setup:</b> 9-point calibration followed by 9-point validation.</li>
+        <li><b>Per-round flow:</b> central cross “+” for 2–4 s → two boxes appear (Gain +$ / Loss −$), each with 50% probability → choose Accept/Reject via keyboard (no time limit). <b>All choices are hypothetical</b> and used for research only.</li>
+        <li><b>Practice:</b> ${PRACTICE_N} rounds (not used for compensation; you may repeat if needed).</li>
         <li><b>Main session:</b> <b>200 rounds</b> total, in <b>two groups of 100</b>. In each group, after round <b>50</b> you will complete <b>5-point calibration → 5-point validation</b>; a <b>key reminder</b> appears every <b>25</b> rounds.</li>
-        <li><b>Payment:</b> start with $${START_ENDOWMENT}. After finishing, one <b>main</b> round is randomly selected: if you rejected on that round, you keep $${START_ENDOWMENT}; if you accepted, a random outcome determines win/loss (added to/subtracted from the starting amount).</li>
+        <li><b>Compensation:</b> a <b>fixed $${START_ENDOWMENT}</b> participant fee. Your decisions do <b>not</b> affect payment.</li>
       </ol>
       <button class="btn" id="btnNext">I understand, continue</button>
     `);
@@ -427,75 +519,72 @@ async function showOverview(){
 
 async function showComprehensionQuiz(){
   return await new Promise((resolve)=>{
-    renderQuiz();
-    function renderQuiz(){
-      show(`
-        <h2>Comprehension Check</h2>
-        <p class="muted">All answers must be correct to proceed.</p>
-        <ol style="margin-top:10px;">
-          <li style="margin-bottom:10px;">
-            What are the probabilities of the gain (+) and loss (−) outcomes on each round?
-            <div>
-              <label><input type="radio" name="q1" value="A"> 50% / 50%</label><br>
-              <label><input type="radio" name="q1" value="B"> 100% / 0%</label><br>
-              <label><input type="radio" name="q1" value="C"> 75% / 25%</label>
-            </div>
-          </li>
-          <li style="margin-bottom:10px;">
-            During the session, may you move your head freely and blink frequently?
-            <div>
-              <label><input type="radio" name="q2" value="A"> Yes, move freely and blink often</label><br>
-              <label><input type="radio" name="q2" value="B"> No, keep your head stable and minimize blinking</label><br>
-              <label><input type="radio" name="q2" value="C"> Eyes must remain closed at all times</label>
-            </div>
-          </li>
-          <li style="margin-bottom:10px;">
-            How is the final payment determined?
-            <div>
-              <label><input type="radio" name="q3" value="A"> One <b>main</b> round is randomly selected: if Rejected → keep $10; if Accepted → a random outcome determines win/loss relative to the $10 start</label><br>
-              <label><input type="radio" name="q3" value="B"> Sum outcomes from all rounds</label><br>
-              <label><input type="radio" name="q3" value="C"> Use only the practice rounds</label>
-            </div>
-          </li>
-          <li style="margin-bottom:10px;">
-            In each <b>group</b>, after which round will you complete the <b>5-point calibration & validation</b>?
-            <div>
-              <label><input type="radio" name="q4" value="A"> After round 25</label><br>
-              <label><input type="radio" name="q4" value="B"> After round 50</label><br>
-              <label><input type="radio" name="q4" value="C"> Never</label>
-            </div>
-          </li>
-        </ol>
-        <div id="quizMsg" class="muted" style="margin-top:10px;"></div>
-        <div style="display:flex; gap:10px; flex-wrap:wrap;">
-          <button class="btn" id="submitQuiz">Submit</button>
-          <button class="btn" id="backOverview">Back to Overview</button>
-        </div>
-      `);
+    show(`
+      <h2>Comprehension Check</h2>
+      <p class="muted">All answers must be correct to proceed.</p>
+      <ol style="margin-top:10px;">
+        <li style="margin-bottom:10px;">
+          What are the probabilities of the gain (+) and loss (−) outcomes on each round?
+          <div>
+            <label><input type="radio" name="q1" value="A"> 50% / 50%</label><br>
+            <label><input type="radio" name="q1" value="B"> 100% / 0%</label><br>
+            <label><input type="radio" name="q1" value="C"> 75% / 25%</label>
+          </div>
+        </li>
+        <li style="margin-bottom:10px;">
+          During the session, may you move your head freely and blink frequently?
+          <div>
+            <label><input type="radio" name="q2" value="A"> Yes, move freely and blink often</label><br>
+            <label><input type="radio" name="q2" value="B"> No, keep your head stable and minimize blinking</label><br>
+            <label><input type="radio" name="q2" value="C"> Eyes must remain closed at all times</label>
+          </div>
+        </li>
+        <li style="margin-bottom:10px;">
+          How will your compensation be determined?
+          <div>
+            <label><input type="radio" name="q3" value="A"> A fixed $${START_ENDOWMENT} participant fee</label><br>
+            <label><input type="radio" name="q3" value="B"> One main round will be paid based on accept/reject</label><br>
+            <label><input type="radio" name="q3" value="C"> Sum outcomes from all rounds</label>
+          </div>
+        </li>
+        <li style="margin-bottom:10px;">
+          In each <b>group</b>, after which round will you complete the <b>5-point calibration & validation</b>?
+          <div>
+            <label><input type="radio" name="q4" value="A"> After round 25</label><br>
+            <label><input type="radio" name="q4" value="B"> After round 50</label><br>
+            <label><input type="radio" name="q4" value="C"> Never</label>
+          </div>
+        </li>
+      </ol>
+      <div id="quizMsg" class="muted" style="margin-top:10px;"></div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn" id="submitQuiz">Submit</button>
+        <button class="btn" id="backOverview">Back to Overview</button>
+      </div>
+    `);
 
-      function get(name){ const el = document.querySelector(`input[name="${name}"]:checked`); return el?el.value:null; }
+    function get(name){ const el = document.querySelector(`input[name="${name}"]:checked`); return el?el.value:null; }
 
-      document.getElementById('submitQuiz').onclick = ()=>{
-        const wrong = [];
-        if(get('q1')!=='A') wrong.push('Q1');
-        if(get('q2')!=='B') wrong.push('Q2');
-        if(get('q3')!=='A') wrong.push('Q3');
-        if(get('q4')!=='B') wrong.push('Q4');
-        const msg = document.getElementById('quizMsg');
-        if (wrong.length){
-          msg.innerHTML = 'Incorrect items: <b>' + wrong.join(', ') + '</b>. Review the overview or adjust your answers and submit again.';
-        }else{
-          show('<h2>Comprehension check passed ✓</h2><button class="btn" id="goNext">Continue</button>');
-          document.getElementById('goNext').onclick=()=>resolve();
-        }
-      };
+    document.getElementById('submitQuiz').onclick = ()=>{
+      const wrong = [];
+      if(get('q1')!=='A') wrong.push('Q1');
+      if(get('q2')!=='B') wrong.push('Q2');
+      if(get('q3')!=='A') wrong.push('Q3');
+      if(get('q4')!=='B') wrong.push('Q4');
+      const msg = document.getElementById('quizMsg');
+      if (wrong.length){
+        msg.innerHTML = 'Incorrect items: <b>' + wrong.join(', ') + '</b>. Review the overview or adjust your answers and submit again.';
+      }else{
+        show('<h2>Comprehension check passed ✓</h2><button class="btn" id="goNext">Continue</button>');
+        document.getElementById('goNext').onclick=()=>resolve();
+      }
+    };
 
-      document.getElementById('backOverview').onclick = async ()=>{
-        await showOverview();
-        await showComprehensionQuiz();
-        resolve();
-      };
-    }
+    document.getElementById('backOverview').onclick = async ()=>{
+      await showOverview();
+      await showComprehensionQuiz();
+      resolve();
+    };
   });
 }
 
@@ -520,25 +609,14 @@ function showCalibIntro9(){
   show(`
     <h2>9-Point Calibration (each point: <b>click 2 times</b>)</h2>
     <div class="note">
-      <b>Preview check:</b> keep your face centered in the top-left preview, both eyes visible, avoid strong backlight; sit 50–70 cm from the screen; browser zoom 100%.
+      <p><b>Purpose.</b> Please calibrate the gaze estimator by clicking each fixation target twice while maintaining gaze on it.</p>
+      <ul style="margin-left:18px">
+        <li>Targets appear in a <b>random order</b> across nine locations (four corners, four edge midpoints, center).</li>
+        <li>For each target, <b>click twice</b> about <b>0.3–0.5 s</b> apart, keeping your <b>eyes</b> on the target (not the mouse cursor).</li>
+        <li>Maintain a stable head position; natural blinks are acceptable.</li>
+      </ul>
     </div>
-    <ol style="margin-top:10px;">
-      <li>Red dots appear in <b>random order</b> at 9 positions (corners, mid-edges, center).</li>
-      <li>On each dot, <b>click twice</b>, about <b>0.3–0.5 s</b> apart; keep your gaze on the dot while clicking.</li>
-      <li>After finishing all 9 dots, you will see a <b>validation instruction</b>. Click to start validation.</li>
-    </ol>
     <button class="btn" id="calStart9">Start 9-point calibration</button>
-  `);
-}
-
-/* 9-point validation intro (click to start) */
-function showValidationIntro9(){
-  show(`
-    <h2>9-Point Validation</h2>
-    <div class="note">
-      Please keep your head stable and look at each red dot as it appears. No clicking needed during validation.
-    </div>
-    <button class="btn" id="valStart9">Start 9-point validation</button>
   `);
 }
 
@@ -546,8 +624,7 @@ function showCalibIntro5First(){
   show(`
     <h2>5-Point Calibration (each point: <b>click 2 times</b>)</h2>
     <div class="note">
-      We will recalibrate to ensure tracking quality. Click <b>twice</b> on each red dot (~0.3–0.5 s apart) while keeping your gaze on it.
-      <br>After finishing, a 5-point validation will <b>start automatically</b>.
+      <p>We will recalibrate to ensure tracking stability. Click <b>twice</b> on each red target (~0.3–0.5 s apart) while keeping your gaze on it. Validation will follow immediately.</p>
     </div>
     <button class="btn" id="calStart5">Start 5-point calibration</button>
   `);
@@ -557,9 +634,48 @@ function showCalibIntro5Retry(){
   show(`
     <h2>5-Point Calibration (retry)</h2>
     <div class="note">
-      The previous 5-point validation did not pass. Please calibrate again (click each dot twice). Validation will start automatically afterward.
+      <p>The previous 5-point validation did not pass. Please recalibrate (click each target twice). Validation will follow immediately.</p>
     </div>
     <button class="btn" id="calRetry5">Start 5-point calibration again</button>
+  `);
+}
+
+/* ===== 9-point validation instruction (serpentine order) ===== */
+function showValidationIntro9(){
+  show(`
+    <h2>9-Point Validation</h2>
+    <div class="note">
+      <p><b>Task.</b> A single red fixation target will appear <b>one at a time</b> across nine locations. <b>Do not click.</b> Simply maintain fixation on each target until it disappears; the next target appears automatically.</p>
+      <p><b>Sequence (serpentine).</b> The first target is at the <b>top-left</b>. The sequence proceeds row by row:
+      <br/><i>Top row:</i> left → center → right
+      <br/><i>Middle row:</i> right → center → left
+      <br/><i>Bottom row:</i> left → center → right
+      </p>
+      <ul style="margin-left:18px">
+        <li>Keep your <b>head stable</b>; move only your eyes.</li>
+        <li>Natural blinks are fine; avoid large body or head movements.</li>
+        <li>If you glance away briefly, re-fixate the current target as soon as possible.</li>
+      </ul>
+    </div>
+    <button class="btn" id="valStart9">Start 9-point validation</button>
+  `);
+}
+
+/* ===== 新增：5-point validation instruction（详细顺序 + 点击开始） ===== */
+function showValidationIntro5(){
+  show(`
+    <h2>5-Point Validation</h2>
+    <div class="note">
+      <p><b>Task.</b> A single red fixation target will appear <b>one at a time</b> at five locations. <b>Do not click.</b> Maintain fixation on each target until it disappears; the next target appears automatically.</p>
+      <p><b>Sequence (fixed order).</b> The targets will appear in the following order:
+      <br/>1) <b>Center</b> → 2) <b>Top-left</b> → 3) <b>Top-right</b> → 4) <b>Bottom-left</b> → 5) <b>Bottom-right</b>.
+      </p>
+      <ul style="margin-left:18px">
+        <li>Keep your <b>head stable</b> and move only your eyes.</li>
+        <li>Natural blinks are acceptable; avoid large head or body movements.</li>
+      </ul>
+    </div>
+    <button class="btn" id="valStart5">Start 5-point validation</button>
   `);
 }
 
@@ -623,33 +739,43 @@ async function showValidationOutcomeAndMaybeLoop9(acc){
   await new Promise(r=>document.getElementById('btnNext').onclick=r);
   if (failed){
     showCalibIntro9();
-    await new Promise(r=>document.getElementById('calStart9').onclick=r);
-    await warmupCameraAndPreview();
+    // 指引页展示预览+红点
+    startGazePreview(); ensurePreviewVisible();
+    await new Promise(r=>{
+      document.getElementById('calStart9').onclick = ()=>{ stopGazePreview(); r(); };
+    });
+    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
     await calibrateNinePointsMouse();
 
+    // 进入 9 点验证指引页
     showValidationIntro9();
-    await new Promise(r=>document.getElementById('valStart9').onclick=r);
-
-    await warmupCameraAndPreview();
+    startGazePreview(); ensurePreviewVisible();
+    await new Promise(r=>{
+      document.getElementById('valStart9').onclick = ()=>{ stopGazePreview(); r(); };
+    });
+    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
     const acc2 = await runNineValidation();
     await showValidationOutcomeAndMaybeLoop9(acc2);
   }
 }
 
 async function calibrationFlow(){
-  // Enable fullscreen guard from here on
-  fsGuardEnabled = true; checkFsGuard();
-
+  // 9 点校准 — 指引页（显示预览+红点）→ 首次相机进度条 → 校准
   showCalibIntro9();
-  await new Promise(r=>document.getElementById('calStart9').onclick=r);
-
-  await warmupCameraAndPreview();
+  startGazePreview(); ensurePreviewVisible();
+  await new Promise(r=>{
+    document.getElementById('calStart9').onclick = ()=>{ stopGazePreview(); r(); };
+  });
+  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
   await calibrateNinePointsMouse();
 
+  // 9 点验证 — 指引页（显示预览+红点）→ 验证
   showValidationIntro9();
-  await new Promise(r=>document.getElementById('valStart9').onclick=r);
-
-  await warmupCameraAndPreview();
+  startGazePreview(); ensurePreviewVisible();
+  await new Promise(r=>{
+    document.getElementById('valStart9').onclick = ()=>{ stopGazePreview(); r(); };
+  });
+  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
   const acc = await runNineValidation();
   await showValidationOutcomeAndMaybeLoop9(acc);
 }
@@ -659,7 +785,7 @@ function showMidWhyIntro(){
   show(`
     <h2>Recalibration</h2>
     <div class="note">
-      You have completed about <b>50</b> rounds in this group. To ensure <b>data quality</b> and <b>tracking stability</b>, we will run a <b>5-point calibration</b> (click twice per dot). Validation will start automatically after that. If not passed, you will recalibrate again until passed.
+      <p>You have completed about <b>50</b> rounds in this group. To ensure data quality and tracking stability, we will conduct a <b>5-point calibration</b> followed by validation. If validation is not passed, recalibration will repeat.</p>
     </div>
     <p class="muted">Press Space to continue.</p>
   `);
@@ -729,21 +855,40 @@ async function quickFivePointValidation(){
   showMidWhyIntro();
   await awaitSpace();
 
+  // 5点校准（已有指引页+预览红点）
   showCalibIntro5First();
-  await new Promise(r=>document.getElementById('calStart5').onclick=r);
-  await warmupCameraAndPreview();
+  startGazePreview(); ensurePreviewVisible();
+  await new Promise(r=>{
+    document.getElementById('calStart5').onclick = ()=>{ stopGazePreview(); r(); };
+  });
+  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
   await calibrateFivePointsMouse();
 
-  await warmupCameraAndPreview();
+  // ===== 新增：5点验证指引页（详细顺序+需点击开始，展示预览+红点） =====
+  showValidationIntro5();
+  startGazePreview(); ensurePreviewVisible();
+  await new Promise(r=>{
+    document.getElementById('valStart5').onclick = ()=>{ stopGazePreview(); r(); };
+  });
+  await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
   let res = await runFiveValidation();
 
   while (!res.passAll){
     showCalibIntro5Retry();
-    await new Promise(r=>document.getElementById('calRetry5').onclick=r);
-    await warmupCameraAndPreview();
+    startGazePreview(); ensurePreviewVisible();
+    await new Promise(r=>{
+      document.getElementById('calRetry5').onclick = ()=>{ stopGazePreview(); r(); };
+    });
+    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for calibration…', waitMs:10000});
     await calibrateFivePointsMouse();
 
-    await warmupCameraAndPreview();
+    // 重试也先给 5点验证指引页并等待点击
+    showValidationIntro5();
+    startGazePreview(); ensurePreviewVisible();
+    await new Promise(r=>{
+      document.getElementById('valStart5').onclick = ()=>{ stopGazePreview(); r(); };
+    });
+    await warmupCameraAndPreview({title:'Camera setup', msg:'Preparing camera for validation…', waitMs:10000});
     res = await runFiveValidation();
   }
 
@@ -812,9 +957,12 @@ async function saveToServer(payload){
   }
 }
 
-/* ===================== Single round (with markers only for main session) ===================== */
+/* ===================== Single round ===================== */
 async function runTrial({group, gain, loss, includeInPayoff=true}){
   const t_trial_start = includeInPayoff ? performance.now() : null;
+
+  // guard: ensure fullscreen
+  await ensureFsIfExited();
 
   // Fixation "+"
   showCenter(`<div class="fix">+</div>`);
@@ -883,14 +1031,13 @@ async function runPractice(){
   while (true){
     show(`
       <h2>Practice</h2>
-      <p>You will complete <b>${PRACTICE_N}</b> practice rounds (not used for payment). Keys: <b>${KEYMAP.legend}</b>.</p>
+      <p>You will complete <b>${PRACTICE_N}</b> practice rounds (not used for compensation). Keys: <b>${KEYMAP.legend}</b>.</p>
       <button class="btn" id="startPractice">Start practice</button>
     `);
     await new Promise(r=>document.getElementById('startPractice').onclick=r);
 
     const z=checkZoomAndSize(); if(z) alert(z);
     if(!isFullscreen()) await enterFullscreen();
-    checkFsGuard();
 
     const practiceOrder = shuffle(practiceSet.map(x=>({...x})));
     for(const it of practiceOrder){
@@ -920,9 +1067,9 @@ async function runGroup(index, list){
 
   const z=checkZoomAndSize(); if(z) alert(z);
   if(!isFullscreen()) await enterFullscreen();
-  checkFsGuard();
 
   for(let i=0;i<list.length;i++){
+    await ensureFsIfExited();
     const it=list[i];
     await runTrial({group:index, gain:it.gain, loss:it.loss, includeInPayoff:true});
 
@@ -932,34 +1079,22 @@ async function runGroup(index, list){
       await showKeyReminder();
       const z2=checkZoomAndSize(); if(z2) alert(z2);
       if(!isFullscreen()) await enterFullscreen();
-      checkFsGuard();
     }
 
     if (t === MID_POINT_IN_BLOCK && t < list.length){
       await quickFivePointValidation();
       const z3=checkZoomAndSize(); if(z3) alert(z3);
       if(!isFullscreen()) await enterFullscreen();
-      checkFsGuard();
 
       await showKeyReminder();
       const z4=checkZoomAndSize(); if(z4) alert(z4);
       if(!isFullscreen()) await enterFullscreen();
-      checkFsGuard();
     }
   }
 }
 
-/* ===================== Payout & finish ===================== */
+/* ===================== Finish (no random payout; fixed fee) ===================== */
 async function finishAndPayout(){
-  const decidedIds = logs.filter(x=>x.phase==='decision').map(x=>x.trial_id);
-  if (decidedIds.length === 0){
-    show(`<h3>Payment Error</h3><p>No valid main-session rounds were found.</p>`);
-    return;
-  }
-  const pickId=decidedIds[Math.floor(Math.random()*decidedIds.length)];
-  const rec=logs.find(x=>x.trial_id===pickId);
-  let coin=null, payout=START_ENDOWMENT;
-  if(rec.accepted){ const win=Math.random()<0.5; coin=win?'win':'lose'; payout += win ? rec.gain : -rec.loss; }
   if (consent_record) logs.unshift({phase:'consent', ...consent_record});
 
   const summary = {
@@ -969,29 +1104,48 @@ async function finishAndPayout(){
     accept_key: KEYMAP.accept, reject_key: KEYMAP.reject,
     px_per_deg: PX_PER_DEG, sep_deg: SEP_DEG,
     practice_n: PRACTICE_N, group_n: [block1.length, block2.length],
-    picked_trial: pickId, picked_group: rec.group,
-    picked_choice: rec.accepted?'accept':'reject',
-    coin, start_endowment: START_ENDOWMENT, payout
+    compensation_fixed: true,
+    base_payment: START_ENDOWMENT,    // $10 fixed participant fee
+    decisions_hypothetical: true
   };
   const payload = { summary, rounds: logs };
   saveToServer(payload);
 
   show(`
-    <h3>Payment Result</h3>
-    <p>Selected round: #${rec.trial_id} (Group ${rec.group}); your choice: <b>${rec.accepted?'Accept':'Reject'}</b></p>
-    <p>${rec.accepted ? (coin==='win'?`Random outcome: <b>Win</b> (+${rec.gain})`:`Random outcome: <b>Loss</b> (−${rec.loss})`) : 'No random outcome (because you rejected).'}</p>
-    <p>Start $${START_ENDOWMENT} → Final <b>$${payout.toFixed(2)}</b></p>
-    ${PROLIFIC_RETURN_URL?`<p><a class="btn" href="${PROLIFIC_RETURN_URL}" style="cursor:pointer;">Return to Prolific</a></p>`:''}
+    <h3>Session Complete</h3>
+    <p>Your decisions in this task were <b>hypothetical</b> and used for research only.</p>
+    <p>Your compensation is a <b>fixed $${START_ENDOWMENT}</b> participant fee.</p>
+    ${
+      PROLIFIC_RETURN_URL
+        ? `<button class="btn" id="backProlificBtn">Return to Prolific</button>`
+        : `<p class="muted">You may now close this window.</p>`
+    }
   `);
+
+  const btn = document.getElementById('backProlificBtn');
+  if (btn && PROLIFIC_RETURN_URL){
+    btn.onclick = () => {
+      // 使用研究页面传入的 RETURN_URL 返回 Prolific
+      location.href = PROLIFIC_RETURN_URL;
+    };
+  }
 }
 
 /* ===================== Main ===================== */
 async function main(){
-  // Load webgazer (no progress bar)
-  show(`<div class="wrap"><h2>System Notice</h2><p class="muted">Loading eye-tracking library… If this page takes unusually long, refresh or check your network connection.</p></div>`);
+  // Loading
+  show(`<div class="wrap"><h2>System Notice / Loading</h2><p class="muted">If this page takes unusually long, refresh or check your network connection; make sure you have granted camera permissions.</p></div>`);
+  modal.open('Loading components', 'Fetching eye-tracking library…', 8);
+  modal.ramp(55, 3, 200);
   try{
     await ensureWebgazer();
+    modal.set(70, 'Eye-tracking library loaded.');
+    await sleep(200);
+    modal.close();
   }catch(e){
+    modal.set(100, 'Failed to load eye-tracking library.');
+    await sleep(500);
+    modal.close();
     const errBox=document.getElementById('err'); errBox.style.display='block';
     errBox.textContent = 'Failed to load WebGazer:\n' + (e && (e.stack||e.message||e));
     show('<div class="wrap"><h2>Unable to load eye-tracking library</h2><p>Details and possible fixes are shown in the bottom-left box.</p></div>');
@@ -1002,11 +1156,6 @@ async function main(){
 
   const consentResult = await showConsent();
   if (consentResult === 'declined') {
-    show(`
-      <h2>You chose not to participate</h2>
-      <p class="muted">The session has been terminated. If this was accidental, refresh the page to restart.</p>
-      ${PROLIFIC_RETURN_URL?`<p><a class="btn" href="${PROLIFIC_RETURN_URL}">Return to Prolific</a></p>`:''}
-    `);
     try { if (window.webgazer) { await webgazer.stop(); } } catch(e) {}
     return;
   }
@@ -1016,12 +1165,12 @@ async function main(){
   await showComprehensionQuiz();
   if (!isFullscreen()) await showFullscreenStep();
 
-  // From here on, enable fullscreen guard
-  fsGuardEnabled = true; checkFsGuard();
-
-  // Initial camera enable (no progress bar; just a short message)
-  await warmupCameraAndPreview();
-  try { await initWebgazer(); } catch(e){}
+  // Initialize webcam & model once (progress bar only here)
+  modal.open('Camera setup', 'Requesting camera access…', 10);
+  modal.ramp(85, 2.5, 250);
+  try { await initWebgazer(); modal.set(95, 'Camera ready'); await sleep(200); } catch(e){ modal.set(95, 'Camera initialization encountered an issue'); await sleep(400); }
+  modal.close();
+  CAMERA_WARMED = false; // ensure first warmupCameraAndPreview (below) shows modal once
 
   await calibrationFlow();
 
